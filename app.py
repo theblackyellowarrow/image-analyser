@@ -1,68 +1,73 @@
 import streamlit as st
 from PIL import Image
-from agno.agent import Agent
-from agno.models.google import Gemini
-from agno.tools.tavily import TavilyTools
-from constants import SYSTEM_PROMPT, INSTRUCTIONS
-import os
-from dotenv import load_dotenv
 import tempfile
-import requests
-from io import BytesIO
+import os
+from anthropic import Anthropic
 
-# Load environment variables
-load_dotenv()
+# Page setup
+st.set_page_config(page_title="📷 AI Visual Analyser", layout="wide")
+st.markdown("""
+    <h1 style='text-align: center; color: white;'>📷 AI Visual Analyser</h1>
+    <p style='text-align: center; color: #a29bfe;'>Forked and developed by Rahul Bhattacharya as a part of dotai + theblackyellowarrow experiments to make AI contextual</p>
+""", unsafe_allow_html=True)
 
-# Initialize Agno Agent
-agent = Agent(
-    model=Gemini(id="gemini-2.0-flash-exp", api_key=st.secrets["GEMINI_API_KEY"]),
-    tools=[TavilyTools()],
-    markdown=True,
-    description=SYSTEM_PROMPT,
-    instructions=INSTRUCTIONS
-)
+# Upload
+uploaded_image = st.file_uploader("📤 Upload Image", type=["jpg", "jpeg", "png"])
+claude_api_key = st.secrets.get("ANTHROPIC_API_KEY")
 
-# Streamlit App UI
-st.set_page_config(page_title="AI Image Ingredient Analyzer", layout="centered")
-st.title("📷 AI Image Ingredient Analyzer")
-st.markdown("Upload an image or enter an image URL to analyze it using AI.")
+def run_claude_analysis(image_path):
+    client = Anthropic(api_key=claude_api_key)
+    prompt = (
+        "Please analyse the uploaded image under the following five categories:\n"
+        "- Formalist Analysis\n"
+        "- Iconographical Analysis\n"
+        "- Iconological Analysis\n"
+        "- Semiotic Analysis\n"
+        "- Semantic Analysis\n"
+        "Then write a critical summary. Use British English. Do not summarise the task. Speak like an art historian, not a chatbot."
+    )
 
-# Inputs
-uploaded_image = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png"])
-image_url = st.text_input("Or enter Image URL")
+    with open(image_path, "rb") as img_file:
+        image_bytes = img_file.read()
 
-# Button to trigger analysis
-if st.button("Analyze Image"):
-    if uploaded_image:
-        # Save uploaded image to a temporary file
+    # Claude 3.5 image input
+    response = client.messages.create(
+        model="claude-3-5-haiku-20240307",
+        max_tokens=1024,
+        temperature=0.5,
+        system="You are a visual culture theorist generating image-based art analysis in British English.",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_bytes.encode("base64")}},
+                    {"type": "text", "text": prompt}
+                ]
+            }
+        ]
+    )
+    return response.content[0].text
+
+# Run
+if uploaded_image and claude_api_key:
+    st.image(uploaded_image, caption="Uploaded Image", use_column_width=True)
+
+    if st.button("🔍 Analyse Your Image"):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
             image = Image.open(uploaded_image)
-            image.save(tmp_file.name)
-            tmp_path = tmp_file.name
+            if image.mode == 'RGBA':
+                image = image.convert('RGB')
+            image.save(tmp_file.name, format='JPEG')
 
-        # Analyze image
-        response = agent.run("Analyze the product image", images=[{"filepath": tmp_path}])
-        os.remove(tmp_path)
-
-        st.markdown("### 🧠 Analysis Result")
-        st.write(response.content)
-
-    elif image_url:
-        try:
-            # Test if URL is reachable and is an image
-            response = requests.get(image_url)
-            if response.status_code == 200:
-                img_bytes = BytesIO(response.content)
-                image = Image.open(img_bytes)
-                st.image(image, caption="Image from URL", use_column_width=True)
-
-                response = agent.run("Analyze the product image", images=[{"url": image_url}])
-                st.markdown("### 🧠 Analysis Result")
-                st.write(response.content)
-            else:
-                st.error("Could not retrieve image from URL. Please check the link.")
-        except Exception as e:
-            st.error(f"Error fetching image: {e}")
-
-    else:
-        st.warning("Please upload an image or provide an image URL.")
+            with st.spinner("Thinking deeply about the image..."):
+                try:
+                    result = run_claude_analysis(tmp_file.name)
+                    st.markdown("### 📝 Claude's Visual Analysis")
+                    st.markdown(result)
+                finally:
+                    os.remove(tmp_file.name)
+else:
+    if not uploaded_image:
+        st.info("Upload an image to begin.")
+    elif not claude_api_key:
+        st.error("Missing `ANTHROPIC_API_KEY` in secrets.toml. Add it to deploy.")
